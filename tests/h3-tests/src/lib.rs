@@ -7,7 +7,6 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use futures::StreamExt;
 use rustls::{Certificate, PrivateKey};
 
 use h3::quic;
@@ -66,7 +65,7 @@ impl Pair {
         crypto.max_early_data_size = u32::MAX;
         crypto.alpn_protocols = vec![b"h3".to_vec()];
 
-        let mut server_config = h3_quinn::quinn::ServerConfig::with_crypto(crypto.into());
+        let mut server_config = h3_quinn::quinn::ServerConfig::with_crypto(Arc::new(crypto));
         server_config.transport = self.config.clone();
         let (endpoint, incoming) =
             h3_quinn::quinn::Endpoint::server(server_config, "[::]:0".parse().unwrap()).unwrap();

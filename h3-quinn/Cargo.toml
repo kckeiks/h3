@@ -7,7 +7,7 @@ edition = "2018"
 [dependencies]
 h3 = { path = "../h3" }
 bytes = "1"
-quinn = { version = "0.8.0", default-features = false }
+quinn = { git="https://github.com/quinn-rs/quinn", rev="332eb60", default-features = false, features = ["tls-rustls", "ring", "futures-core", "futures-io", "runtime-tokio"] }
 quinn-proto = { version = "0.8.0", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["io"] }
 

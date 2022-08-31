@@ -2,7 +2,7 @@ use std::{borrow::BorrowMut, time::Duration};
 
 use assert_matches::assert_matches;
 use bytes::{Buf, Bytes, BytesMut};
-use futures::{future, StreamExt};
+use futures::future;
 use http::{Request, Response, StatusCode};
 
 use h3::{

@@ -16,8 +16,8 @@ use futures_util::ready;
 use futures_util::stream::StreamExt as _;
 
 pub use quinn::{
-    self, crypto::Session, Endpoint, IncomingBiStreams, IncomingUniStreams, NewConnection, OpenBi,
-    OpenUni, VarInt, WriteError,
+    self, crypto::Session, Endpoint, IncomingBiStreams, IncomingUniStreams, NewConnection, VarInt,
+    WriteError,
 };
 
 use h3::quic::{self, Error, StreamId, WriteBuf};
@@ -25,9 +25,7 @@ use h3::quic::{self, Error, StreamId, WriteBuf};
 pub struct Connection {
     conn: quinn::Connection,
     incoming_bi: IncomingBiStreams,
-    opening_bi: Option<OpenBi>,
     incoming_uni: IncomingUniStreams,
-    opening_uni: Option<OpenUni>,
 }
 
 impl Connection {
@@ -42,9 +40,7 @@ impl Connection {
         Self {
             conn: connection,
             incoming_bi: bi_streams,
-            opening_bi: None,
             incoming_uni: uni_streams,
-            opening_uni: None,
         }
     }
 }
@@ -67,7 +63,7 @@ impl Error for ConnectionError {
 
     fn err_code(&self) -> Option<u64> {
         match self.0 {
-            quinn::ConnectionError::ApplicationClosed(quinn_proto::ApplicationClose {
+            quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
                 error_code,
                 ..
             }) => Some(error_code.into_inner()),
@@ -96,7 +92,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Option<Self::BidiStream>, Self::Error>> {
-        let (send, recv) = match ready!(self.incoming_bi.next().poll_unpin(cx)) {
+        let (send, recv) = match ready!(self.incoming_bi.poll_next_unpin(cx)) {
             Some(x) => x?,
             None => return Poll::Ready(Ok(None)),
         };
@@ -121,11 +117,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Self::BidiStream, Self::Error>> {
-        if self.opening_bi.is_none() {
-            self.opening_bi = Some(self.conn.open_bi());
-        }
-
-        let (send, recv) = ready!(self.opening_bi.as_mut().unwrap().poll_unpin(cx))?;
+        let (send, recv) = ready!(Box::pin(self.conn.open_bi()).poll_unpin(cx))?;
         Poll::Ready(Ok(Self::BidiStream {
             send: Self::SendStream::new(send),
             recv: Self::RecvStream::new(recv),
@@ -136,19 +128,13 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Self::SendStream, Self::Error>> {
-        if self.opening_uni.is_none() {
-            self.opening_uni = Some(self.conn.open_uni());
-        }
-
-        let send = ready!(self.opening_uni.as_mut().unwrap().poll_unpin(cx))?;
+        let send = ready!(Box::pin(self.conn.open_uni()).poll_unpin(cx))?;
         Poll::Ready(Ok(Self::SendStream::new(send)))
     }
 
     fn opener(&self) -> Self::OpenStreams {
         OpenStreams {
             conn: self.conn.clone(),
-            opening_bi: None,
-            opening_uni: None,
         }
     }
 
@@ -162,8 +148,6 @@ where
 
 pub struct OpenStreams {
     conn: quinn::Connection,
-    opening_bi: Option<OpenBi>,
-    opening_uni: Option<OpenUni>,
 }
 
 impl<B> quic::OpenStreams<B> for OpenStreams
@@ -179,11 +163,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Self::BidiStream, Self::Error>> {
-        if self.opening_bi.is_none() {
-            self.opening_bi = Some(self.conn.open_bi());
-        }
-
-        let (send, recv) = ready!(self.opening_bi.as_mut().unwrap().poll_unpin(cx))?;
+        let (send, recv) = ready!(Box::pin(self.conn.open_bi()).poll_unpin(cx))?;
         Poll::Ready(Ok(Self::BidiStream {
             send: Self::SendStream::new(send),
             recv: Self::RecvStream::new(recv),
@@ -194,11 +174,7 @@ where
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Self::SendStream, Self::Error>> {
-        if self.opening_uni.is_none() {
-            self.opening_uni = Some(self.conn.open_uni());
-        }
-
-        let send = ready!(self.opening_uni.as_mut().unwrap().poll_unpin(cx))?;
+        let send = ready!(Box::pin(self.conn.open_uni()).poll_unpin(cx))?;
         Poll::Ready(Ok(Self::SendStream::new(send)))
     }
 
@@ -214,8 +190,6 @@ impl Clone for OpenStreams {
     fn clone(&self) -> Self {
         Self {
             conn: self.conn.clone(),
-            opening_bi: None,
-            opening_uni: None,
         }
     }
 }
@@ -304,10 +278,10 @@ impl quic::RecvStream for RecvStream {
         &mut self,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<Option<Self::Buf>, Self::Error>> {
-        Poll::Ready(Ok(ready!(self
-            .stream
-            .read_chunk(usize::MAX, true)
-            .poll_unpin(cx))?
+        Poll::Ready(Ok(ready!(Box::pin(
+            self.stream.read_chunk(usize::MAX, true)
+        )
+        .poll_unpin(cx))?
         .map(|c| (c.bytes))))
     }
 
@@ -352,7 +326,7 @@ impl Error for ReadError {
     fn err_code(&self) -> Option<u64> {
         match self.0 {
             quinn::ReadError::ConnectionLost(quinn::ConnectionError::ApplicationClosed(
-                quinn_proto::ApplicationClose { error_code, .. },
+                quinn::ApplicationClose { error_code, .. },
             )) => Some(error_code.into_inner()),
             quinn::ReadError::Reset(error_code) => Some(error_code.into_inner()),
             _ => None,
@@ -413,7 +387,9 @@ where
     }
 
     fn poll_finish(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.stream.finish().poll_unpin(cx).map_err(Into::into)
+        Box::pin(self.stream.finish())
+            .poll_unpin(cx)
+            .map_err(Into::into)
     }
 
     fn reset(&mut self, reset_code: u64) {
@@ -469,7 +445,7 @@ impl Error for SendStreamError {
         match self {
             Self::Write(quinn::WriteError::Stopped(error_code)) => Some(error_code.into_inner()),
             Self::Write(quinn::WriteError::ConnectionLost(
-                quinn::ConnectionError::ApplicationClosed(quinn_proto::ApplicationClose {
+                quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
                     error_code,
                     ..
                 }),
