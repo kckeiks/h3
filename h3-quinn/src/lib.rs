@@ -17,7 +17,7 @@ use futures_util::stream::StreamExt as _;
 
 pub use quinn::{
     self, crypto::Session, Endpoint, IncomingBiStreams, IncomingUniStreams, NewConnection, VarInt,
-    WriteError,
+    TokioRuntime, AsyncUdpSocket, WriteError,
 };
 
 use h3::quic::{self, Error, StreamId, WriteBuf};
